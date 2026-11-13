@@ -18,6 +18,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
@@ -87,6 +88,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 
 /**
  * Lecteur : ouvre la page de la saison sur Anime-Sama (avec son propre lecteur vidéo),
@@ -131,7 +133,8 @@ class PlayerActivity : ComponentActivity() {
         /** N'affiche que le lecteur de la page, sans le reste du site ni les pubs. */
         private const val CSS =
             "html,body{background:#000!important;overflow:hidden!important}" +
-                "header,nav,footer,.pub-btag,.ad-container,.ct-cinema-fermer{display:none!important}" +
+                "header,nav,footer,.pub-btag,.ad-container,.ad-content,#pubCollee,#bannBot,iframe[src*='/pub/']," +
+                ".ct-cinema-fermer,#scrollProgressWrapper{display:none!important}" +
                 ".ct-lecteur{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;" +
                 "width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;" +
                 "margin:0!important;padding:0!important;border-radius:0!important;z-index:2147483646!important;" +
@@ -242,6 +245,11 @@ class PlayerActivity : ComponentActivity() {
                     return mainName(request.url.host) != mainName(Uri.parse(AnimeSama.base).host) && !request.isRedirect
                 }
 
+                override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                    if (!isAd(request.url)) return null
+                    return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+                }
+
                 override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
                     view.evaluateJavascript(injectCss(), null)
                 }
@@ -275,9 +283,53 @@ class PlayerActivity : ComponentActivity() {
         fullscreenCallback = null
     }
 
-    private fun injectCss(): String =
-        "(function(){if(document.getElementById('miru-css'))return;var s=document.createElement('style');" +
-            "s.id='miru-css';s.textContent=${JSONObject.quote(CSS)};(document.head||document.documentElement).appendChild(s);})()"
+    /**
+     * Ajoute la feuille de style, puis cache tout ce qui n'est pas le lecteur (pubs collées en bas,
+     * bannières ajoutées après coup…) et continue de surveiller la page.
+     */
+    private fun injectCss(): String = """
+        (function(){
+          if(!document.getElementById('miru-css')){
+            var s=document.createElement('style'); s.id='miru-css'; s.textContent=${JSONObject.quote(CSS)};
+            (document.head||document.documentElement).appendChild(s);
+          }
+          window.open=function(){return null;};
+          function hide(e){ if(e&&e.style&&!/^(SCRIPT|STYLE|LINK|META|TITLE|HEAD)$/.test(e.tagName)) e.style.setProperty('display','none','important'); }
+          function clean(){
+            var p=document.querySelector('.ct-lecteur'); if(!p||!document.body) return;
+            for(var a=p; a&&a!==document.documentElement; a=a.parentElement){
+              var par=a.parentElement; if(!par) break;
+              for(var i=0;i<par.children.length;i++){ var c=par.children[i]; if(c!==a) hide(c); }
+            }
+            var all=document.querySelectorAll('iframe');
+            for(var j=0;j<all.length;j++){ if(all[j].id!=='playerDF' && !p.contains(all[j])) hide(all[j]); }
+          }
+          clean();
+          if(!window.__miruObs && document.documentElement){
+            var t=null;
+            window.__miruObs=new MutationObserver(function(){ if(t) return; t=setTimeout(function(){t=null;clean();},150); });
+            window.__miruObs.observe(document.documentElement,{childList:true,subtree:true});
+          }
+        })()
+    """.trimIndent()
+
+    /** Réseaux de pub courants, bloqués aussi dans le lecteur vidéo. */
+    private val AD_HOSTS = listOf(
+        "doubleclick.net", "googlesyndication.com", "googleadservices.com", "adservice.google", "googletagmanager.com",
+        "google-analytics.com", "adnxs.com", "adsterra", "a-ads.com", "popads.net", "popcash.net", "propellerads",
+        "onclickads", "onclicka", "exoclick", "exdynsrv", "juicyads", "hilltopads", "clickadu", "monetag", "adcash",
+        "trafficjunky", "adskeeper", "mgid.com", "taboola", "outbrain", "revcontent", "pubmatic", "rubiconproject",
+        "criteo", "amazon-adsystem", "yandex.ru/ads", "dtscout", "highperformanceformat", "profitablecpmrate",
+        "effectivecpmgate", "displayvertising", "realsrv", "magsrv", "betteradsystem", "tsyndicate", "pemsrv",
+    )
+
+    private fun isAd(url: Uri): Boolean {
+        val host = url.host?.lowercase() ?: return false
+        val full = host + (url.path ?: "")
+        if (AD_HOSTS.any { full.contains(it) }) return true
+        // Cadres de pub du site lui-même (/pub/…).
+        return mainName(host) == mainName(Uri.parse(AnimeSama.base).host) && (url.path ?: "").startsWith("/pub/")
+    }
 
     // ------------------------------------------------------------------ Épisodes
 
