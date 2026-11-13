@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Écran arrondi avec un bouton lecture -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FF7C8CFF"
+        android:pathData="M36,34 L72,34 Q80,34 80,42 L80,66 Q80,74 72,74 L36,74 Q28,74 28,66 L28,42 Q28,34 36,34 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M48,44 L64,54 L48,64 Z" />
+</vector>
