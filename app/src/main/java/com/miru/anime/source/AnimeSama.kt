@@ -346,41 +346,40 @@ object AnimeSama {
         } catch (e: HttpException) {
             if (e.code == 404) return null else throw e
         }
-        val filever = Regex("""episodes\.js\?filever=(\d+)""").find(page)?.groupValues?.get(1)
-        val jsUrl = seasonUrl + "episodes.js" + (filever?.let { "?filever=$it" } ?: "")
-        val js = try {
-            Http.getString(jsUrl, mapOf("Referer" to seasonUrl))
-        } catch (e: HttpException) {
-            if (e.code == 404 || e.code == 403) return null else throw e
+        if (page.contains("<title>Page introuvable", ignoreCase = true)) return null
+        // Les listes de lecteurs (eps1, eps2…) sont maintenant écrites directement dans la page de la saison.
+        var arrays = withContext(Dispatchers.Default) { parseEpisodesJs(page) }
+        if (arrays.isEmpty()) {
+            // Ancien format : fichier episodes.js à côté de la page.
+            val js = try {
+                Http.getString(seasonUrl + "episodes.js", mapOf("Referer" to seasonUrl))
+            } catch (e: HttpException) {
+                if (e.code == 404 || e.code == 403) return null else throw e
+            }
+            arrays = withContext(Dispatchers.Default) { parseEpisodesJs(js) }
         }
         return withContext(Dispatchers.Default) {
-            val arrays = parseEpisodesJs(js)
             val count = arrays.maxOfOrNull { it.size } ?: 0
             if (count == 0) return@withContext null
             val labels = parseLabels(page, count, stem.contains("film", true))
             (0 until count).map { i ->
-                val players = arrays.mapNotNull { arr -> arr.getOrNull(i)?.let { normalizeUrl(it) } }.distinct()
+                val players = arrays.mapNotNull { arr -> arr.getOrNull(i)?.trim()?.takeIf { it.isNotEmpty() } }
                 Episode(i, labels[i], players)
             }
         }
     }
 
-    private fun normalizeUrl(raw: String): String? {
-        val u = raw.trim()
-        return when {
-            u.isEmpty() -> null
-            u.startsWith("//") -> "https:$u"
-            u.startsWith("http://") || u.startsWith("https://") -> u
-            else -> null
-        }
-    }
+    /** Adresse de la page d'une saison sur le site (c'est elle qui contient le lecteur). */
+    fun seasonUrl(slug: String, stem: String, lang: String) = "$base/catalogue/$slug/$stem/$lang/"
 
     /** `var eps1 = ['url', 'url', …];` → une liste par lecteur. */
     private fun parseEpisodesJs(js: String): List<List<String>> {
         val clean = stripComments(js)
-        val arrRe = Regex("""(eps[A-Za-z0-9_]*)\s*=\s*\[(.*?)]""", RegexOption.DOT_MATCHES_ALL)
+        val arrRe = Regex("""\b(eps\d+)\s*=\s*\[(.*?)]""", RegexOption.DOT_MATCHES_ALL)
         val strRe = Regex("""'([^']*)'|"([^"]*)"""")
-        return arrRe.findAll(clean).map { m ->
+        val seen = HashSet<String>()
+        return arrRe.findAll(clean).mapNotNull { m ->
+            if (!seen.add(m.groupValues[1])) return@mapNotNull null
             strRe.findAll(m.groupValues[2]).map { s -> s.groupValues[1].ifEmpty { s.groupValues[2] }.trim() }.toList()
         }.filter { arr -> arr.any { it.isNotBlank() } }.toList()
     }

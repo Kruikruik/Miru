@@ -19,7 +19,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -37,7 +36,6 @@ import com.miru.anime.data.AppUpdater
 import com.miru.anime.data.Prefs
 import com.miru.anime.model.Langs
 import com.miru.anime.source.AnimeSama
-import com.miru.anime.source.Extractors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -50,8 +48,6 @@ fun MoreScreen() {
     var domainStatus by remember { mutableStateOf<String?>(if (Prefs.domainManual) "Adresse fixée à la main" else null) }
     var lang by remember { mutableStateOf(Prefs.preferredLang) }
     var host by remember { mutableStateOf(Prefs.preferredHost) }
-    var autoNext by remember { mutableStateOf(Prefs.autoNext) }
-    var skip by remember { mutableStateOf(Prefs.skipSeconds) }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var release by remember { mutableStateOf<AppRelease?>(null) }
 
@@ -133,24 +129,7 @@ fun MoreScreen() {
             Label("Langue par défaut")
             ChipRow(listOf("vostfr", "vf"), lang, { Langs.label(it) }) { lang = it; Prefs.preferredLang = it }
             Label("Lecteur essayé en premier")
-            ChipRow(listOf("Auto") + Extractors.KNOWN_HOSTS.take(4), host, { it }) { host = it; Prefs.preferredHost = it }
-            Label("Bouton « Passer l'intro »")
-            ChipRow(listOf(60, 85, 90, 120), skip, { "+$it s" }) { skip = it; Prefs.skipSeconds = it }
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Épisode suivant automatique")
-                    Text(
-                        "Enchaîne à la fin d'un épisode, et passe à la saison suivante.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = autoNext, onCheckedChange = { autoNext = it; Prefs.autoNext = it })
-            }
-
+            ChipRow(listOf("Auto", "Vidmoly", "Sibnet", "Sendvid", "VK"), host, { it }) { host = it; Prefs.preferredHost = it }
             HorizontalDivider(Modifier.padding(top = 8.dp))
             Section("Application")
             Text(

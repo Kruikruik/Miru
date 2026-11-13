@@ -1,17 +1,29 @@
 package com.miru.anime.player
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Color as AColor
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Message
+import android.os.SystemClock
 import android.util.Rational
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -19,12 +31,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -38,10 +49,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -60,17 +71,6 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
-import androidx.media3.common.AudioAttributes
-import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.ui.PlayerView
 import com.miru.anime.data.HistoryEntry
 import com.miru.anime.data.Library
 import com.miru.anime.data.Prefs
@@ -79,18 +79,19 @@ import com.miru.anime.model.Episode
 import com.miru.anime.model.Langs
 import com.miru.anime.net.Http
 import com.miru.anime.source.AnimeSama
-import com.miru.anime.source.Extractors
-import com.miru.anime.source.Stream
 import com.miru.anime.ui.MiruIcons
 import com.miru.anime.ui.MiruTheme
 import com.miru.anime.ui.errorText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
-@androidx.annotation.OptIn(UnstableApi::class)
+/**
+ * Lecteur : ouvre la page de la saison sur Anime-Sama (avec son propre lecteur vidéo),
+ * choisit le bon épisode et n'affiche que la vidéo, en plein écran.
+ */
 class PlayerActivity : ComponentActivity() {
 
     companion object {
@@ -101,6 +102,9 @@ class PlayerActivity : ComponentActivity() {
         private const val SEASON = "season"
         private const val LANG = "lang"
         private const val INDEX = "index"
+
+        /** Temps passé sur un épisode à partir duquel on le considère comme vu. */
+        private const val WATCHED_AFTER_MS = 15 * 60_000L
 
         fun start(
             context: Context,
@@ -123,9 +127,23 @@ class PlayerActivity : ComponentActivity() {
             if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
         }
+
+        /** N'affiche que le lecteur de la page, sans le reste du site ni les pubs. */
+        private const val CSS =
+            "html,body{background:#000!important;overflow:hidden!important}" +
+                "header,nav,footer,.pub-btag,.ad-container,.ct-cinema-fermer{display:none!important}" +
+                ".ct-lecteur{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;" +
+                "width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;" +
+                "margin:0!important;padding:0!important;border-radius:0!important;z-index:2147483646!important;" +
+                "background:#000!important;transform:none!important}" +
+                ".ct-lecteur #playerDF{position:absolute!important;left:0!important;top:0!important;" +
+                "width:100%!important;height:100%!important;border:0!important}"
     }
 
-    private lateinit var player: ExoPlayer
+    private lateinit var web: WebView
+    private lateinit var root: FrameLayout
+    private var fullscreenView: View? = null
+    private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
 
     private var slug = ""
     private var title by mutableStateOf("")
@@ -136,16 +154,21 @@ class PlayerActivity : ComponentActivity() {
     private var episodes by mutableStateOf<List<Episode>>(emptyList())
     private var index by mutableIntStateOf(0)
 
-    /** Message affiché pendant le chargement (null = la vidéo joue). */
-    private var status by mutableStateOf<String?>(null)
+    private var status by mutableStateOf<String?>("Chargement…")
     private var failure by mutableStateOf<String?>(null)
-    private var currentPlayer by mutableStateOf<String?>(null)
+    private var lecteurs by mutableStateOf<List<String>>(emptyList())
+    private var lecteur by mutableIntStateOf(0)
     private var inPip by mutableStateOf(false)
+    private var barVisible by mutableStateOf(true)
+    private var barTick by mutableIntStateOf(0)
 
-    private var candidates: List<String> = emptyList()
-    private var candidateIndex = 0
-    private var pendingSeek = 0L
-    private var loadJob: Job? = null
+    /** Page de saison actuellement chargée dans la vue web. */
+    private var loadedUrl: String? = null
+    private var selectJob: Job? = null
+
+    /** Temps passé sur l'épisode en cours (pour le marquer vu). */
+    private var watchedMs = 0L
+    private var resumedAt = 0L
 
     private val currentEpisode: Episode? get() = episodes.getOrNull(index)
 
@@ -153,34 +176,19 @@ class PlayerActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         readIntent(intent)
         goFullscreen()
-
-        player = ExoPlayer.Builder(this)
-            .setSeekBackIncrementMs(10_000)
-            .setSeekForwardIncrementMs(10_000)
-            .setAudioAttributes(
-                AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),
-                true,
-            )
-            .setHandleAudioBecomingNoisy(true)
-            .build()
-        player.addListener(listener)
-
+        buildWebView()
         setContent { MiruTheme { PlayerScreen() } }
-
-        openEpisode(index)
-
-        // Sauvegarde régulière de la position.
-        lifecycleScope.launch {
-            while (isActive) {
-                delay(5_000)
-                saveProgress()
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (fullscreenView != null) hideCustomView() else finish()
             }
-        }
+        })
+        openEpisode(index)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        saveProgress()
+        finishEpisode()
         readIntent(intent)
         openEpisode(index)
     }
@@ -210,19 +218,79 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    // ------------------------------------------------------------------ Chargement
+    // ------------------------------------------------------------------ Vue web
+
+    /** Partie principale d'un nom d'hôte : « anime-sama » pour anime-sama.to. */
+    private fun mainName(host: String?): String =
+        host.orEmpty().removePrefix("www.").split('.').let { if (it.size >= 2) it[it.size - 2] else it.firstOrNull().orEmpty() }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun buildWebView() {
+        root = FrameLayout(this).apply { setBackgroundColor(AColor.BLACK) }
+        web = WebView(this).apply {
+            setBackgroundColor(AColor.BLACK)
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.mediaPlaybackRequiresUserGesture = false
+            settings.setSupportMultipleWindows(true)
+            settings.javaScriptCanOpenWindowsAutomatically = false
+            settings.userAgentString = Http.USER_AGENT
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    if (!request.isForMainFrame) return false
+                    // Bloque les redirections publicitaires : on reste sur Anime-Sama.
+                    return mainName(request.url.host) != mainName(Uri.parse(AnimeSama.base).host) && !request.isRedirect
+                }
+
+                override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                    view.evaluateJavascript(injectCss(), null)
+                }
+
+                override fun onPageFinished(view: WebView, url: String?) {
+                    view.evaluateJavascript(injectCss(), null)
+                    selectEpisodeOnPage()
+                }
+            }
+            webChromeClient = object : WebChromeClient() {
+                override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean =
+                    false
+
+                override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                    fullscreenView?.let { root.removeView(it) }
+                    fullscreenView = view
+                    fullscreenCallback = callback
+                    root.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                }
+
+                override fun onHideCustomView() = hideCustomView()
+            }
+        }
+        root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun hideCustomView() {
+        fullscreenView?.let { root.removeView(it) }
+        fullscreenView = null
+        fullscreenCallback?.onCustomViewHidden()
+        fullscreenCallback = null
+    }
+
+    private fun injectCss(): String =
+        "(function(){if(document.getElementById('miru-css'))return;var s=document.createElement('style');" +
+            "s.id='miru-css';s.textContent=${JSONObject.quote(CSS)};(document.head||document.documentElement).appendChild(s);})()"
+
+    // ------------------------------------------------------------------ Épisodes
 
     private fun key(i: Int) = episodeKey(slug, stem, i)
 
-    private fun openEpisode(i: Int, preferred: String? = null) {
-        saveProgress()
-        loadJob?.cancel()
-        player.stop()
-        player.clearMediaItems()
+    private fun openEpisode(i: Int) {
         failure = null
         status = "Chargement…"
         index = i
-        loadJob = lifecycleScope.launch {
+        watchedMs = 0L
+        resumedAt = SystemClock.elapsedRealtime()
+        showBar()
+        lifecycleScope.launch {
             try {
                 if (episodes.isEmpty()) {
                     episodes = AnimeSama.episodes(slug, stem, lang)
@@ -238,14 +306,14 @@ class PlayerActivity : ComponentActivity() {
                 Library.record(
                     HistoryEntry(slug, title, cover, stem, seasonName, lang, ep.index, ep.label, System.currentTimeMillis()),
                 )
-                val ordered = Extractors.sortPlayers(ep.players, Prefs.preferredHost)
-                candidates = if (preferred != null) listOf(preferred) + ordered.filter { it != preferred } else ordered
-                candidateIndex = 0
-                val saved = Library.progress.value[key(i)]
-                pendingSeek = if (saved != null && !saved.watched && saved.position > 5_000 &&
-                    (saved.duration <= 0 || saved.position < saved.duration - 20_000)
-                ) saved.position else 0L
-                tryCandidates()
+                val url = AnimeSama.seasonUrl(slug, stem, lang)
+                if (url != loadedUrl) {
+                    loadedUrl = url
+                    lecteurs = emptyList()
+                    web.loadUrl(url, mapOf("Referer" to "${AnimeSama.base}/catalogue/$slug/"))
+                } else {
+                    selectEpisodeOnPage()
+                }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
@@ -255,84 +323,87 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    /** Essaie les lecteurs un par un jusqu'à en trouver un qui donne une vidéo. */
-    private suspend fun tryCandidates() {
-        while (candidateIndex < candidates.size) {
-            val url = candidates[candidateIndex]
-            currentPlayer = url
-            status = "Lecteur ${Extractors.hostName(url)} (${candidateIndex + 1}/${candidates.size})…"
-            val stream = try {
-                Extractors.extract(url, AnimeSama.base + "/")
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (_: Exception) {
-                null
+    /** Choisit l'épisode (et le lecteur préféré) dans les menus de la page. */
+    private fun selectEpisodeOnPage() {
+        selectJob?.cancel()
+        val target = index
+        val pref = JSONObject.quote(Prefs.preferredHost)
+        val script = """
+            (function(){
+              var s=document.getElementById('selectEpisodes');
+              if(!s||s.options.length<=$target) return null;
+              if(s.selectedIndex!==$target){ s.selectedIndex=$target; s.dispatchEvent(new Event('change',{bubbles:true})); }
+              var l=document.getElementById('selectLecteurs'), names=[], cur=0;
+              if(l){
+                var pref=$pref;
+                if(pref!=='Auto' && !window.__miruPref$target){
+                  window.__miruPref$target=true;
+                  for(var i=0;i<l.options.length;i++){ if(l.options[i].text.toLowerCase().indexOf(pref.toLowerCase())>=0){ if(l.selectedIndex!==i){ l.selectedIndex=i; l.dispatchEvent(new Event('change',{bubbles:true})); } break; } }
+                }
+                for(var j=0;j<l.options.length;j++) names.push(l.options[j].text);
+                cur=l.selectedIndex;
+              }
+              return {lecteurs:names, lecteur:cur};
+            })()
+        """.trimIndent()
+        selectJob = lifecycleScope.launch {
+            repeat(40) {
+                val result = evaluate(script)
+                if (result != null && result != "null") {
+                    runCatching {
+                        val o = JSONObject(result)
+                        val arr = o.optJSONArray("lecteurs")
+                        lecteurs = (0 until (arr?.length() ?: 0)).map { arr!!.getString(it) }
+                        lecteur = o.optInt("lecteur")
+                    }
+                    status = null
+                    return@launch
+                }
+                delay(400)
             }
-            if (stream != null) {
-                play(stream)
-                return
-            }
-            candidateIndex++
-        }
-        status = null
-        failure = if (candidates.isEmpty()) "Aucun lecteur pour cet épisode." else
-            "Aucun lecteur n'a marché.\nEssaie le lecteur web : il ouvre la page du lecteur directement."
-    }
-
-    private fun play(stream: Stream) {
-        val dataSource = OkHttpDataSource.Factory(Http.client)
-            .setUserAgent(Http.USER_AGENT)
-            .setDefaultRequestProperties(stream.headers)
-        val item = MediaItem.Builder()
-            .setUri(stream.url)
-            .apply { if (stream.isHls) setMimeType(MimeTypes.APPLICATION_M3U8) }
-            .build()
-        player.setMediaSource(DefaultMediaSourceFactory(dataSource).createMediaSource(item))
-        player.prepare()
-        if (pendingSeek > 0) player.seekTo(pendingSeek)
-        player.playWhenReady = true
-        status = "Chargement de la vidéo…"
-    }
-
-    private val listener = object : Player.Listener {
-        override fun onPlaybackStateChanged(state: Int) {
-            when (state) {
-                Player.STATE_READY -> status = null
-                Player.STATE_ENDED -> onEnded()
-                else -> {}
-            }
-        }
-
-        override fun onPlayerError(error: PlaybackException) {
-            // On garde la position et on passe au lecteur suivant.
-            if (player.currentPosition > 5_000) pendingSeek = player.currentPosition
-            candidateIndex++
-            loadJob?.cancel()
-            loadJob = lifecycleScope.launch { tryCandidates() }
+            status = null
+            failure = "Le lecteur de la page n'a pas été trouvé.\nLe site a peut-être changé."
         }
     }
 
-    private fun onEnded() {
-        val dur = player.duration
-        if (dur > 0 && episodes.isNotEmpty()) Library.saveProgress(key(index), dur, dur)
-        if (Prefs.autoNext) next(auto = true)
+    private suspend fun evaluate(script: String): String? = kotlinx.coroutines.suspendCancellableCoroutine<String?> { cont ->
+        web.evaluateJavascript(script) { if (cont.isActive) cont.resumeWith(Result.success(it)) }
     }
 
-    private fun saveProgress() {
-        if (!::player.isInitialized || episodes.isEmpty()) return
-        val dur = player.duration
-        val pos = player.currentPosition
-        if (dur == C.TIME_UNSET || dur <= 0 || pos <= 0) return
-        Library.saveProgress(key(index), pos, dur)
+    private fun chooseLecteur(i: Int) {
+        web.evaluateJavascript(
+            "(function(){var l=document.getElementById('selectLecteurs');if(!l)return;l.selectedIndex=$i;" +
+                "l.dispatchEvent(new Event('change',{bubbles:true}));})()",
+            null,
+        )
+        lecteur = i
+    }
+
+    /** Fin d'un épisode : on le marque vu si on l'a regardé assez longtemps. */
+    private fun finishEpisode(forceWatched: Boolean = false) {
+        pauseTimer()
+        if (episodes.isNotEmpty() && (forceWatched || watchedMs >= WATCHED_AFTER_MS)) {
+            Library.setWatched(listOf(key(index)), true)
+        }
+        watchedMs = 0L
+    }
+
+    private fun pauseTimer() {
+        if (resumedAt > 0) watchedMs += SystemClock.elapsedRealtime() - resumedAt
+        resumedAt = 0L
     }
 
     private fun previous() {
-        if (index > 0) openEpisode(index - 1)
+        if (index > 0) {
+            finishEpisode()
+            openEpisode(index - 1)
+        }
     }
 
     /** Épisode suivant, ou premier épisode de la saison suivante. */
-    private fun next(auto: Boolean = false) {
+    private fun next() {
         if (index + 1 < episodes.size) {
+            finishEpisode(forceWatched = true)
             openEpisode(index + 1)
             return
         }
@@ -341,7 +412,7 @@ class PlayerActivity : ComponentActivity() {
                 AnimeSama.details(slug)
                 val s = AnimeSama.nextSeason(slug, stem)
                 if (s == null) {
-                    if (!auto) toast("C'était le dernier épisode.")
+                    toast("C'était le dernier épisode.")
                     return@launch
                 }
                 var newLang = lang
@@ -351,7 +422,7 @@ class PlayerActivity : ComponentActivity() {
                     toast("${s.name} n'a pas encore d'épisode.")
                     return@launch
                 }
-                saveProgress()
+                finishEpisode(forceWatched = true)
                 stem = s.stem
                 seasonName = s.name
                 lang = newLang
@@ -365,24 +436,21 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
-    private fun skipIntro() {
-        val target = player.currentPosition + Prefs.skipSeconds * 1000L
-        val dur = player.duration
-        player.seekTo(if (dur > 0) minOf(target, dur - 1000) else target)
+    private fun showBar() {
+        barVisible = true
+        barTick++
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
-    // ------------------------------------------------------------------ Image dans l'image
+    // ------------------------------------------------------------------ Cycle de vie et image dans l'image
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (::player.isInitialized && player.isPlaying) enterPip()
-    }
-
-    private fun enterPip() {
-        runCatching {
-            enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build())
+        if (status == null && failure == null) {
+            runCatching {
+                enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build())
+            }
         }
     }
 
@@ -391,16 +459,24 @@ class PlayerActivity : ComponentActivity() {
         inPip = isInPictureInPictureMode
     }
 
+    override fun onResume() {
+        super.onResume()
+        web.onResume()
+        if (resumedAt == 0L) resumedAt = SystemClock.elapsedRealtime()
+    }
+
     override fun onStop() {
         super.onStop()
-        saveProgress()
-        if (!inPip) player.pause()
+        if (!inPip) {
+            pauseTimer()
+            web.onPause()
+        }
     }
 
     override fun onDestroy() {
-        saveProgress()
-        player.removeListener(listener)
-        player.release()
+        finishEpisode()
+        (web.parent as? ViewGroup)?.removeView(web)
+        web.destroy()
         super.onDestroy()
     }
 
@@ -408,38 +484,29 @@ class PlayerActivity : ComponentActivity() {
 
     @Composable
     private fun PlayerScreen() {
-        var controlsVisible by remember { mutableStateOf(true) }
-        var showPlayers by remember { mutableStateOf(false) }
+        var showLecteurs by remember { mutableStateOf(false) }
         var showEpisodes by remember { mutableStateOf(false) }
         val ep = currentEpisode
         val busy = status != null || failure != null
 
+        // La barre du haut se cache toute seule au bout de quelques secondes.
+        LaunchedEffect(barTick, busy) {
+            if (!busy) {
+                delay(4_000)
+                barVisible = false
+            }
+        }
+
         Box(Modifier.fillMaxSize().background(Color.Black)) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        player = this@PlayerActivity.player
-                        setShowNextButton(false)
-                        setShowPreviousButton(false)
-                        setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
-                        controllerShowTimeoutMs = 3500
-                        keepScreenOn = true
-                        setControllerVisibilityListener(
-                            PlayerView.ControllerVisibilityListener { v -> controlsVisible = v == View.VISIBLE },
-                        )
-                    }
-                },
-                update = { it.useController = !inPip },
-                modifier = Modifier.fillMaxSize(),
-            )
+            AndroidView(factory = { root }, modifier = Modifier.fillMaxSize())
 
             if (inPip) return@Box
 
-            if (controlsVisible || busy) {
+            if (barVisible || busy) {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.7f), Color.Transparent)))
+                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.85f), Color.Transparent)))
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -455,10 +522,12 @@ class PlayerActivity : ComponentActivity() {
                             maxLines = 1,
                         )
                     }
-                    TextButton(onClick = { showPlayers = true }) {
-                        Text(currentPlayer?.let { Extractors.hostName(it) } ?: "Lecteurs", color = Color.White)
+                    if (lecteurs.size > 1) {
+                        TextButton(onClick = { showLecteurs = true; showBar() }) {
+                            Text(lecteurs.getOrNull(lecteur)?.substringAfter("·")?.trim() ?: "Lecteurs", color = Color.White)
+                        }
                     }
-                    IconButton(onClick = { showEpisodes = true }) {
+                    IconButton(onClick = { showEpisodes = true; showBar() }) {
                         Icon(Icons.AutoMirrored.Filled.List, "Épisodes", tint = Color.White)
                     }
                     IconButton(onClick = { previous() }, enabled = index > 0) {
@@ -468,85 +537,68 @@ class PlayerActivity : ComponentActivity() {
                         Icon(MiruIcons.SkipNext, "Épisode suivant", tint = Color.White)
                     }
                 }
-            }
-
-            if (controlsVisible && !busy) {
-                Button(
-                    onClick = { skipIntro() },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 24.dp, bottom = 96.dp),
-                ) {
-                    Icon(MiruIcons.FastForward, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("+${Prefs.skipSeconds} s")
-                }
+            } else {
+                // Bande invisible en haut : un appui fait réapparaître la barre.
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                        .clickable { showBar() },
+                )
             }
 
             val st = status
             val fail = failure
             if (fail != null) {
                 Column(
-                    Modifier.align(Alignment.Center).padding(24.dp),
+                    Modifier
+                        .align(Alignment.Center)
+                        .background(Color.Black.copy(alpha = 0.8f))
+                        .padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text(fail, color = Color.White, textAlign = TextAlign.Center)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { openEpisode(index) }) { Text("Réessayer") }
-                        val web = currentPlayer ?: ep?.players?.firstOrNull()
-                        if (web != null) {
-                            OutlinedButton(onClick = { WebPlayerActivity.start(this@PlayerActivity, web) }) {
-                                Text("Lecteur web", color = Color.White)
-                            }
-                        }
-                        if ((ep?.players?.size ?: 0) > 1) {
-                            OutlinedButton(onClick = { showPlayers = true }) { Text("Choisir", color = Color.White) }
-                        }
-                    }
+                    Button(onClick = { loadedUrl = null; openEpisode(index) }) { Text("Réessayer") }
                 }
             } else if (st != null) {
                 Column(
-                    Modifier.align(Alignment.Center),
+                    Modifier
+                        .align(Alignment.Center)
+                        .background(Color.Black.copy(alpha = 0.6f))
+                        .padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     CircularProgressIndicator()
-                    Spacer(Modifier.width(8.dp))
                     Text(st, color = Color.White, modifier = Modifier.padding(top = 12.dp))
                 }
             }
         }
 
-        if (showPlayers && ep != null) {
+        if (showLecteurs) {
             AlertDialog(
-                onDismissRequest = { showPlayers = false },
+                onDismissRequest = { showLecteurs = false },
                 title = { Text("Lecteurs") },
                 text = {
                     LazyColumn(Modifier.heightIn(max = 320.dp)) {
-                        itemsIndexed(ep.players) { i, url ->
+                        itemsIndexed(lecteurs) { i, name ->
                             Row(
                                 Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        showPlayers = false
-                                        openEpisode(index, preferred = url)
+                                        showLecteurs = false
+                                        chooseLecteur(i)
                                     }
                                     .padding(vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text("${i + 1}. ${Extractors.hostName(url)}", Modifier.weight(1f))
-                                if (url == currentPlayer) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
+                                Text(name, Modifier.weight(1f))
+                                if (i == lecteur) Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary)
                             }
                         }
                     }
                 },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showPlayers = false
-                        (currentPlayer ?: ep.players.firstOrNull())?.let { WebPlayerActivity.start(this, it) }
-                    }) { Text("Lecteur web") }
-                },
-                dismissButton = { TextButton(onClick = { showPlayers = false }) { Text("Fermer") } },
+                confirmButton = { TextButton(onClick = { showLecteurs = false }) { Text("Fermer") } },
             )
         }
 
@@ -564,7 +616,10 @@ class PlayerActivity : ComponentActivity() {
                                     .fillMaxWidth()
                                     .clickable {
                                         showEpisodes = false
-                                        openEpisode(i)
+                                        if (i != index) {
+                                            finishEpisode()
+                                            openEpisode(i)
+                                        }
                                     }
                                     .padding(vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
