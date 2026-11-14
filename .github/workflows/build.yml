@@ -21,20 +21,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Préparer la clé de signature (depuis les Secrets GitHub)
-        env:
-          SIGNING_KEYSTORE: ${{ secrets.SIGNING_KEYSTORE }}
-          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
-        run: |
-          if [ -z "$SIGNING_KEYSTORE" ] || [ -z "$SIGNING_PASSWORD" ]; then
-            echo "::error::Secrets SIGNING_KEYSTORE / SIGNING_PASSWORD manquants (Settings > Secrets and variables > Actions)"
-            exit 1
-          fi
-          echo "$SIGNING_KEYSTORE" | base64 -d > app/miru.keystore
-
       - name: Compiler l'APK
-        env:
-          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --stacktrace
