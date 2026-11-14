@@ -20,12 +20,21 @@ android {
     }
 
     // Clé de signature fixe : chaque nouvelle version s'installe par-dessus l'ancienne.
+    // La clé n'est plus dans le dépôt : sur GitHub Actions elle vient des Secrets
+    // (SIGNING_KEYSTORE / SIGNING_PASSWORD), décodée dans app/miru.keystore.
+    val signingPassword = System.getenv("SIGNING_PASSWORD")
+    val keystoreFile = file("miru.keystore")
+    val hasSigningKey = signingPassword != null && keystoreFile.exists()
     signingConfigs {
         create("miru") {
-            storeFile = file("miru.keystore")
-            storePassword = "miru1234"
-            keyAlias = "miru"
-            keyPassword = "miru1234"
+            if (hasSigningKey) {
+                storeFile = keystoreFile
+                storePassword = signingPassword
+                keyAlias = "miru"
+                keyPassword = signingPassword
+            } else {
+                initWith(getByName("debug"))
+            }
         }
     }
 
