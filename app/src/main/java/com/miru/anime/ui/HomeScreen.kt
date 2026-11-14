@@ -34,11 +34,17 @@ import com.miru.anime.data.Library
 import com.miru.anime.data.episodeKey
 import com.miru.anime.model.HomeSection
 import com.miru.anime.player.PlayerActivity
+import com.miru.anime.data.Prefs
+import com.miru.anime.source.Sources
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.Alignment
 import kotlinx.coroutines.CancellationException
 
 /** Dernier contenu de l'accueil, gardé en mémoire pour ne pas recharger à chaque changement d'onglet. */
 private object HomeCache {
-    var sections: List<HomeSection>? = null
+    val sections = HashMap<String, List<HomeSection>>()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -49,18 +55,20 @@ fun HomeScreen(
     onSettings: () -> Unit,
 ) {
     val context = LocalContext.current
-    var sections by remember { mutableStateOf(HomeCache.sections) }
+    var sourceId by remember { mutableStateOf(Prefs.source) }
+    val source = Sources.byId(sourceId)
+    var sections by remember(sourceId) { mutableStateOf(HomeCache.sections[sourceId]) }
     var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
     val history by Library.history.collectAsState()
     val progress by Library.progress.collectAsState()
 
-    LaunchedEffect(reload) {
+    LaunchedEffect(reload, sourceId) {
         if (sections != null && reload == 0) return@LaunchedEffect
         error = null
         try {
-            val s = com.miru.anime.source.AnimeSama.home()
-            HomeCache.sections = s
+            val s = source.home()
+            HomeCache.sections[sourceId] = s
             sections = s
         } catch (ce: CancellationException) {
             throw ce
@@ -72,7 +80,9 @@ fun HomeScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Miru", fontWeight = FontWeight.Bold) },
+                title = {
+                    SourcePicker(sourceId) { sourceId = it; Prefs.source = it; reload = 0; error = null }
+                },
                 actions = {
                     IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "Rechercher") }
                     IconButton(onClick = { reload++ }) { Icon(Icons.Default.Refresh, "Actualiser") }
@@ -87,6 +97,7 @@ fun HomeScreen(
                 onRetry = { reload++ },
                 modifier = Modifier.fillMaxSize().padding(padding),
                 onSettings = onSettings,
+                address = source.base,
             )
             current == null -> LoadingBox(Modifier.fillMaxSize().padding(padding))
             else -> LazyColumn(

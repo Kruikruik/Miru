@@ -79,7 +79,7 @@ import com.miru.anime.data.episodeKey
 import com.miru.anime.model.Episode
 import com.miru.anime.model.Langs
 import com.miru.anime.net.Http
-import com.miru.anime.source.AnimeSama
+import com.miru.anime.source.Sources
 import com.miru.anime.ui.MiruIcons
 import com.miru.anime.ui.MiruTheme
 import com.miru.anime.ui.errorText
@@ -130,18 +130,20 @@ class PlayerActivity : ComponentActivity() {
             context.startActivity(intent)
         }
 
-        /** N'affiche que le lecteur de la page, sans le reste du site ni les pubs. */
-        private const val CSS =
+        /** N'affiche que le lecteur de la page (bloc `container`), sans le reste du site ni les pubs. */
+        private fun css(container: String) =
             "html,body{background:#000!important;overflow:hidden!important}" +
                 "header,nav,footer,.pub-btag,.ad-container,.ad-content,#pubCollee,#bannBot,iframe[src*='/pub/']," +
                 ".ct-cinema-fermer,#scrollProgressWrapper{display:none!important}" +
-                ".ct-lecteur{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;" +
+                "$container{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;" +
                 "width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;" +
                 "margin:0!important;padding:0!important;border-radius:0!important;z-index:2147483646!important;" +
                 "background:#000!important;transform:none!important}" +
-                ".ct-lecteur #playerDF{position:absolute!important;left:0!important;top:0!important;" +
+                "$container iframe{position:absolute!important;left:0!important;top:0!important;" +
                 "width:100%!important;height:100%!important;border:0!important}"
     }
+
+    private val source get() = Sources.of(slug)
 
     private lateinit var web: WebView
     private lateinit var root: FrameLayout
@@ -242,7 +244,7 @@ class PlayerActivity : ComponentActivity() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                     if (!request.isForMainFrame) return false
                     // Bloque les redirections publicitaires : on reste sur Anime-Sama.
-                    return mainName(request.url.host) != mainName(Uri.parse(AnimeSama.base).host) && !request.isRedirect
+                    return mainName(request.url.host) != mainName(Uri.parse(source.base).host) && !request.isRedirect
                 }
 
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
@@ -290,19 +292,19 @@ class PlayerActivity : ComponentActivity() {
     private fun injectCss(): String = """
         (function(){
           if(!document.getElementById('miru-css')){
-            var s=document.createElement('style'); s.id='miru-css'; s.textContent=${JSONObject.quote(CSS)};
+            var s=document.createElement('style'); s.id='miru-css'; s.textContent=${JSONObject.quote(css(source.player.container))};
             (document.head||document.documentElement).appendChild(s);
           }
           window.open=function(){return null;};
           function hide(e){ if(e&&e.style&&!/^(SCRIPT|STYLE|LINK|META|TITLE|HEAD)$/.test(e.tagName)) e.style.setProperty('display','none','important'); }
           function clean(){
-            var p=document.querySelector('.ct-lecteur'); if(!p||!document.body) return;
+            var p=document.querySelector(${JSONObject.quote(source.player.container)}); if(!p||!document.body) return;
             for(var a=p; a&&a!==document.documentElement; a=a.parentElement){
               var par=a.parentElement; if(!par) break;
               for(var i=0;i<par.children.length;i++){ var c=par.children[i]; if(c!==a) hide(c); }
             }
             var all=document.querySelectorAll('iframe');
-            for(var j=0;j<all.length;j++){ if(all[j].id!=='playerDF' && !p.contains(all[j])) hide(all[j]); }
+            for(var j=0;j<all.length;j++){ if(!p.contains(all[j])) hide(all[j]); }
           }
           clean();
           if(!window.__miruObs && document.documentElement){
@@ -328,7 +330,7 @@ class PlayerActivity : ComponentActivity() {
         val full = host + (url.path ?: "")
         if (AD_HOSTS.any { full.contains(it) }) return true
         // Cadres de pub du site lui-même (/pub/…).
-        return mainName(host) == mainName(Uri.parse(AnimeSama.base).host) && (url.path ?: "").startsWith("/pub/")
+        return mainName(host) == mainName(Uri.parse(source.base).host) && (url.path ?: "").startsWith("/pub/")
     }
 
     // ------------------------------------------------------------------ Épisodes
@@ -345,8 +347,8 @@ class PlayerActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 if (episodes.isEmpty()) {
-                    episodes = AnimeSama.episodes(slug, stem, lang)
-                        ?: AnimeSama.episodes(slug, stem, "vostfr")?.also { lang = "vostfr" }
+                    episodes = source.episodes(slug, stem, lang)
+                        ?: source.episodes(slug, stem, "vostfr")?.also { lang = "vostfr" }
                         ?: emptyList()
                 }
                 val ep = currentEpisode
@@ -358,11 +360,11 @@ class PlayerActivity : ComponentActivity() {
                 Library.record(
                     HistoryEntry(slug, title, cover, stem, seasonName, lang, ep.index, ep.label, System.currentTimeMillis()),
                 )
-                val url = AnimeSama.seasonUrl(slug, stem, lang)
+                val url = source.playerUrl(slug, stem, lang, ep)
                 if (url != loadedUrl) {
                     loadedUrl = url
                     lecteurs = emptyList()
-                    web.loadUrl(url, mapOf("Referer" to "${AnimeSama.base}/catalogue/$slug/"))
+                    web.loadUrl(url, mapOf("Referer" to "${source.base}/"))
                 } else {
                     selectEpisodeOnPage()
                 }
@@ -380,19 +382,27 @@ class PlayerActivity : ComponentActivity() {
         selectJob?.cancel()
         val target = index
         val pref = JSONObject.quote(Prefs.preferredHost)
+        val cfg = source.player
+        val cont = JSONObject.quote(cfg.container)
+        val epSel = cfg.episodeSelect?.let { JSONObject.quote(it) } ?: "null"
+        val lectSel = JSONObject.quote(cfg.lecteurSelect)
         val script = """
             (function(){
-              var s=document.getElementById('selectEpisodes');
-              if(!s||s.options.length<=$target) return null;
-              if(s.selectedIndex!==$target){ s.selectedIndex=$target; s.dispatchEvent(new Event('change',{bubbles:true})); }
-              var l=document.getElementById('selectLecteurs'), names=[], cur=0;
+              if(!document.querySelector($cont)) return null;
+              var es=$epSel;
+              if(es){
+                var s=document.querySelector(es);
+                if(!s||s.options.length<=$target) return null;
+                if(s.selectedIndex!==$target){ s.selectedIndex=$target; s.dispatchEvent(new Event('change',{bubbles:true})); }
+              }
+              var l=document.querySelector($lectSel), names=[], cur=0;
               if(l){
-                var pref=$pref;
-                if(pref!=='Auto' && !window.__miruPref$target){
-                  window.__miruPref$target=true;
+                var pref=$pref, k='miruPref:'+location.pathname+':'+$target;
+                var done=false; try{ done=!!sessionStorage.getItem(k); sessionStorage.setItem(k,'1'); }catch(e){}
+                if(pref!=='Auto' && !done){
                   for(var i=0;i<l.options.length;i++){ if(l.options[i].text.toLowerCase().indexOf(pref.toLowerCase())>=0){ if(l.selectedIndex!==i){ l.selectedIndex=i; l.dispatchEvent(new Event('change',{bubbles:true})); } break; } }
                 }
-                for(var j=0;j<l.options.length;j++) names.push(l.options[j].text);
+                for(var j=0;j<l.options.length;j++) names.push(l.options[j].text.trim());
                 cur=l.selectedIndex;
               }
               return {lecteurs:names, lecteur:cur};
@@ -424,7 +434,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun chooseLecteur(i: Int) {
         web.evaluateJavascript(
-            "(function(){var l=document.getElementById('selectLecteurs');if(!l)return;l.selectedIndex=$i;" +
+            "(function(){var l=document.querySelector(${JSONObject.quote(source.player.lecteurSelect)});if(!l)return;l.selectedIndex=$i;" +
                 "l.dispatchEvent(new Event('change',{bubbles:true}));})()",
             null,
         )
@@ -461,15 +471,15 @@ class PlayerActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             try {
-                AnimeSama.details(slug)
-                val s = AnimeSama.nextSeason(slug, stem)
+                source.details(slug)
+                val s = source.nextSeason(slug, stem)
                 if (s == null) {
                     toast("C'était le dernier épisode.")
                     return@launch
                 }
                 var newLang = lang
-                val eps = AnimeSama.episodes(slug, s.stem, lang)
-                    ?: AnimeSama.episodes(slug, s.stem, "vostfr")?.also { newLang = "vostfr" }
+                val eps = source.episodes(slug, s.stem, lang)
+                    ?: source.episodes(slug, s.stem, "vostfr")?.also { newLang = "vostfr" }
                 if (eps.isNullOrEmpty()) {
                     toast("${s.name} n'a pas encore d'épisode.")
                     return@launch
@@ -576,7 +586,7 @@ class PlayerActivity : ComponentActivity() {
                     }
                     if (lecteurs.size > 1) {
                         TextButton(onClick = { showLecteurs = true; showBar() }) {
-                            Text(lecteurs.getOrNull(lecteur)?.substringAfter("·")?.trim() ?: "Lecteurs", color = Color.White)
+                            Text(lecteurs.getOrNull(lecteur)?.substringAfter("·")?.trim()?.removePrefix("LECTEUR ")?.removePrefix("Lecteur ") ?: "Lecteurs", color = Color.White)
                         }
                     }
                     IconButton(onClick = { showEpisodes = true; showBar() }) {

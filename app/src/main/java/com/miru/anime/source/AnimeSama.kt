@@ -29,14 +29,23 @@ import java.util.concurrent.ConcurrentHashMap
  * Source Anime-Sama : lecture des pages du site (accueil, catalogue, fiche, saisons)
  * et des fichiers `episodes.js` qui listent les lecteurs de chaque épisode.
  */
-object AnimeSama {
+object AnimeSama : Source {
+    override val id = "animesama"
+    override val name = "Anime-Sama"
+    override val hasVfFilter = true
+    override val player = PlayerConfig(
+        container = ".ct-lecteur",
+        lecteurSelect = "#selectLecteurs",
+        episodeSelect = "#selectEpisodes",
+    )
+
 
     /** Adresses connues, essayées dans l'ordre quand l'adresse actuelle ne répond plus. */
     private val KNOWN_DOMAINS = listOf(
         "anime-sama.to", "anime-sama.tv", "anime-sama.si", "anime-sama.org", "anime-sama.fr", "anime-sama.eu",
     )
 
-    val base: String get() = "https://${Prefs.domain}"
+    override val base: String get() = "https://${Prefs.domain}"
 
     fun cover(slug: String) = "https://cdn.jsdelivr.net/gh/Anime-Sama/IMG@img/contenu/$slug.jpg"
 
@@ -155,7 +164,7 @@ object AnimeSama {
 
     // ---------------------------------------------------------------- Accueil
 
-    suspend fun home(): List<HomeSection> = withDomain { b ->
+    override suspend fun home(): List<HomeSection> = withDomain { b ->
         val html = Http.getString("$b/")
         withContext(Dispatchers.Default) { parseHome(Jsoup.parse(html, "$b/")) }
     }
@@ -207,13 +216,13 @@ object AnimeSama {
     // ---------------------------------------------------------------- Catalogue et recherche
 
     /** Genres proposés comme filtres (orthographe du site). */
-    val GENRES = listOf(
+    override val genres = listOf(
         "Action", "Aventure", "Comédie", "Drame", "Fantasy", "Fantastique", "Horreur", "Isekai", "Mystère",
         "Psychologique", "Romance", "School Life", "Science-fiction", "Seinen", "Shônen", "Shôjo",
         "Slice of Life", "Sport", "Surnaturel", "Thriller",
     )
 
-    suspend fun catalogue(query: String, page: Int, vfOnly: Boolean, genres: Set<String>): CataloguePage =
+    override suspend fun catalogue(query: String, page: Int, vfOnly: Boolean, genres: Set<String>): CataloguePage =
         withDomain { b ->
             val url = "$b/catalogue/".toHttpUrl().newBuilder().apply {
                 addQueryParameter("type[]", "Anime")
@@ -249,9 +258,9 @@ object AnimeSama {
 
     private val PANEL_RE = Regex("""panneauAnime\(\s*["']([^"']*)["']\s*,\s*["']([^"']*)["']\s*\)""")
 
-    fun cachedDetails(slug: String): AnimeDetails? = detailsCache[slug]
+    override fun cachedDetails(slug: String): AnimeDetails? = detailsCache[slug]
 
-    suspend fun details(slug: String, force: Boolean = false): AnimeDetails {
+    override suspend fun details(slug: String, force: Boolean): AnimeDetails {
         if (!force) detailsCache[slug]?.let { return it }
         val d = withDomain { b ->
             val url = "$b/catalogue/$slug/"
@@ -314,7 +323,7 @@ object AnimeSama {
     fun cachedEpisodes(slug: String, stem: String, lang: String): List<Episode>? = episodesCache["$slug/$stem/$lang"]
 
     /** Épisodes d'une saison dans une langue, ou null si cette langue n'existe pas pour la saison. */
-    suspend fun episodes(slug: String, stem: String, lang: String, force: Boolean = false): List<Episode>? {
+    override suspend fun episodes(slug: String, stem: String, lang: String, force: Boolean): List<Episode>? {
         val key = "$slug/$stem/$lang"
         if (!force) episodesCache[key]?.let { return it }
         val list = withDomain { b -> fetchEpisodes(b, slug, stem, lang) } ?: return null
@@ -323,7 +332,7 @@ object AnimeSama {
     }
 
     /** Toutes les langues disponibles pour une saison, chargées en parallèle. */
-    suspend fun allLangs(slug: String, stem: String, force: Boolean = false): Map<String, List<Episode>> =
+    override suspend fun allLangs(slug: String, stem: String, force: Boolean): Map<String, List<Episode>> =
         coroutineScope {
             val results = Langs.all.map { lang ->
                 async {
@@ -371,6 +380,8 @@ object AnimeSama {
 
     /** Adresse de la page d'une saison sur le site (c'est elle qui contient le lecteur). */
     fun seasonUrl(slug: String, stem: String, lang: String) = "$base/catalogue/$slug/$stem/$lang/"
+
+    override fun playerUrl(slug: String, stem: String, lang: String, episode: Episode): String = seasonUrl(slug, stem, lang)
 
     /** `var eps1 = ['url', 'url', …];` → une liste par lecteur. */
     private fun parseEpisodesJs(js: String): List<List<String>> {
@@ -422,7 +433,7 @@ object AnimeSama {
     }
 
     /** Saison suivante (hors films) pour enchaîner automatiquement. */
-    fun nextSeason(slug: String, stem: String): Season? {
+    override fun nextSeason(slug: String, stem: String): Season? {
         val seasons = detailsCache[slug]?.seasons ?: return null
         val i = seasons.indexOfFirst { it.stem == stem }
         if (i < 0) return null

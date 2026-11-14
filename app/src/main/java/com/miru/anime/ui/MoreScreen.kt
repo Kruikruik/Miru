@@ -47,6 +47,8 @@ fun MoreScreen() {
     var domainInput by remember { mutableStateOf(Prefs.domain) }
     var domainStatus by remember { mutableStateOf<String?>(if (Prefs.domainManual) "Adresse fixée à la main" else null) }
     var lang by remember { mutableStateOf(Prefs.preferredLang) }
+    var vaInput by remember { mutableStateOf(Prefs.voiranimeDomain) }
+    var vaStatus by remember { mutableStateOf<String?>(null) }
     var host by remember { mutableStateOf(Prefs.preferredHost) }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var release by remember { mutableStateOf<AppRelease?>(null) }
@@ -125,11 +127,36 @@ fun MoreScreen() {
             }
 
             HorizontalDivider(Modifier.padding(top = 16.dp))
+            Section("Adresse de Voiranime")
+            Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = vaInput,
+                    onValueChange = { vaInput = it },
+                    singleLine = true,
+                    label = { Text("Adresse") },
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = {
+                    val clean = vaInput.trim().removePrefix("https://").removePrefix("http://").removePrefix("www.").trimEnd('/')
+                    if (clean.contains('.')) {
+                        Prefs.voiranimeDomain = clean
+                        vaInput = clean
+                        vaStatus = "Enregistrée"
+                    }
+                }) { Text("OK") }
+            }
+            vaStatus?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            }
+
+            HorizontalDivider(Modifier.padding(top = 16.dp))
             Section("Lecture")
             Label("Langue par défaut")
             ChipRow(listOf("vostfr", "vf"), lang, { Langs.label(it) }) { lang = it; Prefs.preferredLang = it }
             Label("Lecteur essayé en premier")
-            ChipRow(listOf("Auto", "Vidmoly", "Sibnet", "Sendvid", "VK"), host, { it }) { host = it; Prefs.preferredHost = it }
+            ChipRow(listOf("Auto", "Vidmoly", "Sibnet", "Voe", "Moon", "Stape"), host, { it }) { host = it; Prefs.preferredHost = it }
             HorizontalDivider(Modifier.padding(top = 8.dp))
             Section("Application")
             Text(

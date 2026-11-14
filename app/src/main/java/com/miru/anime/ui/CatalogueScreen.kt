@@ -40,7 +40,6 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.miru.anime.model.AnimeCard
-import com.miru.anime.source.AnimeSama
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -48,6 +47,8 @@ import kotlinx.coroutines.launch
 
 /** État du catalogue, gardé en mémoire tant que l'appli est ouverte. */
 private object CatalogueModel {
+    var sourceId by mutableStateOf(com.miru.anime.data.Prefs.source)
+    val source get() = com.miru.anime.source.Sources.byId(sourceId)
     var query by mutableStateOf("")
     var vfOnly by mutableStateOf(false)
     var genres by mutableStateOf(setOf<String>())
@@ -75,7 +76,7 @@ private object CatalogueModel {
         val next = page + 1
         job = scope.launch {
             try {
-                val res = AnimeSama.catalogue(query.trim(), next, vfOnly, genres)
+                val res = source.catalogue(query.trim(), next, vfOnly && source.hasVfFilter, genres.intersect(source.genres.toSet()))
                 val known = items.map { it.slug }.toSet()
                 val fresh = res.items.filter { it.slug !in known }
                 items = items + fresh
@@ -138,18 +139,25 @@ fun CatalogueScreen(onOpen: (String) -> Unit, onSettings: () -> Unit) {
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         )
+        Box(Modifier.padding(horizontal = 12.dp)) {
+            SourcePicker(m.sourceId) {
+                m.sourceId = it
+                com.miru.anime.data.Prefs.source = it
+                m.reset(scope)
+            }
+        }
         LazyRow(
             contentPadding = PaddingValues(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            item {
+            if (m.source.hasVfFilter) item {
                 FilterChip(
                     selected = m.vfOnly,
                     onClick = { m.vfOnly = !m.vfOnly; m.reset(scope) },
                     label = { Text("VF") },
                 )
             }
-            items(AnimeSama.GENRES) { g ->
+            items(m.source.genres) { g ->
                 FilterChip(
                     selected = g in m.genres,
                     onClick = {
@@ -164,7 +172,7 @@ fun CatalogueScreen(onOpen: (String) -> Unit, onSettings: () -> Unit) {
         Box(Modifier.fillMaxSize()) {
             when {
                 m.items.isEmpty() && m.loading -> LoadingBox()
-                m.items.isEmpty() && m.error != null -> ErrorBox(m.error!!, onRetry = { m.reset(scope) }, onSettings = onSettings)
+                m.items.isEmpty() && m.error != null -> ErrorBox(m.error!!, onRetry = { m.reset(scope) }, onSettings = onSettings, address = m.source.base)
                 m.items.isEmpty() && !m.hasNext -> EmptyBox("Aucun résultat.")
                 else -> LazyVerticalGrid(
                     columns = GridCells.Adaptive(108.dp),

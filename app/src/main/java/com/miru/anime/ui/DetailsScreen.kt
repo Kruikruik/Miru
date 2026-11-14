@@ -57,7 +57,7 @@ import com.miru.anime.model.AnimeDetails
 import com.miru.anime.model.Episode
 import com.miru.anime.model.Langs
 import com.miru.anime.player.PlayerActivity
-import com.miru.anime.source.AnimeSama
+import com.miru.anime.source.Sources
 import kotlinx.coroutines.CancellationException
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,7 +69,8 @@ fun DetailsScreen(slug: String, initialSeason: String?, onBack: () -> Unit, onSe
     val progress by Library.progress.collectAsState()
     val lastWatched = history.firstOrNull { it.slug == slug }
 
-    var details by remember { mutableStateOf(AnimeSama.cachedDetails(slug)) }
+    val source = remember(slug) { Sources.of(slug) }
+    var details by remember { mutableStateOf(source.cachedDetails(slug)) }
     var error by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
     var stem by remember { mutableStateOf(initialSeason ?: lastWatched?.stem) }
@@ -81,7 +82,7 @@ fun DetailsScreen(slug: String, initialSeason: String?, onBack: () -> Unit, onSe
     LaunchedEffect(reload) {
         error = null
         try {
-            val d = AnimeSama.details(slug, force = reload > 0)
+            val d = source.details(slug, force = reload > 0)
             details = d
             if (stem == null || d.seasons.none { it.stem == stem }) {
                 stem = d.seasons.firstOrNull()?.stem
@@ -98,7 +99,7 @@ fun DetailsScreen(slug: String, initialSeason: String?, onBack: () -> Unit, onSe
         langs = null
         langError = null
         try {
-            val map = AnimeSama.allLangs(slug, s, force = reload > 0)
+            val map = source.allLangs(slug, s, force = reload > 0)
             langs = map
             val wanted = listOfNotNull(
                 lang,
@@ -128,7 +129,7 @@ fun DetailsScreen(slug: String, initialSeason: String?, onBack: () -> Unit, onSe
         },
     ) { padding ->
         when {
-            d == null && error != null -> ErrorBox(error!!, onRetry = { reload++ }, Modifier.fillMaxSize().padding(padding), onSettings)
+            d == null && error != null -> ErrorBox(error!!, onRetry = { reload++ }, Modifier.fillMaxSize().padding(padding), onSettings, source.base)
             d == null -> LoadingBox(Modifier.fillMaxSize().padding(padding))
             else -> {
                 val season = d.seasons.firstOrNull { it.stem == stem }

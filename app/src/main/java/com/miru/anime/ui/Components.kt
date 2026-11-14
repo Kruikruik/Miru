@@ -113,13 +113,33 @@ fun AnimeTile(
     }
 }
 
+/** Choix du site (Anime-Sama, Voiranime…). */
+@Composable
+fun SourcePicker(selected: String, onSelect: (String) -> Unit) {
+    androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        com.miru.anime.source.Sources.all.forEach { s ->
+            androidx.compose.material3.FilterChip(
+                selected = s.id == selected,
+                onClick = { if (s.id != selected) onSelect(s.id) },
+                label = { Text(s.name) },
+            )
+        }
+    }
+}
+
 @Composable
 fun LoadingBox(modifier: Modifier = Modifier.fillMaxSize()) {
     Box(modifier, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
 }
 
 @Composable
-fun ErrorBox(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier.fillMaxSize(), onSettings: (() -> Unit)? = null) {
+fun ErrorBox(
+    message: String,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier.fillMaxSize(),
+    onSettings: (() -> Unit)? = null,
+    address: String = AnimeSama.base,
+) {
     Column(
         modifier.padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -128,7 +148,7 @@ fun ErrorBox(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier
         Text(message, textAlign = TextAlign.Center)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Adresse utilisée : ${AnimeSama.base.removePrefix("https://")}",
+            "Adresse utilisée : ${address.removePrefix("https://")}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

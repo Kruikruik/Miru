@@ -24,6 +24,15 @@ object Prefs {
         get() = sp.getLong("last_domain_check", 0L)
         set(value) { sp.edit().putLong("last_domain_check", value).apply() }
 
+    var voiranimeDomain: String
+        get() = sp.getString("va_domain", null) ?: "voiranime.cx"
+        set(value) { sp.edit().putString("va_domain", value).apply() }
+
+    /** Site affiché dans l'accueil et le catalogue. */
+    var source: String
+        get() = sp.getString("source", null) ?: "animesama"
+        set(value) { sp.edit().putString("source", value).apply() }
+
     /** Langue choisie par défaut : « vostfr » ou « vf ». */
     var preferredLang: String
         get() = sp.getString("lang", null) ?: "vostfr"
